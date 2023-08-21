@@ -1,43 +1,37 @@
+# This is an example build stage for the node template. Here we create the binary in a temporary image.
 
-ARG BASE_IMAGE=ubuntu:20.04
+# This is a base image to build substrate nodes
+FROM docker.io/paritytech/ci-linux:production as builder
 
-FROM $BASE_IMAGE as builder
-SHELL ["/bin/bash", "-c"]
-
-# This is being set so that no interactive components are allowed when updating.
-ARG DEBIAN_FRONTEND=noninteractive
-
-LABEL ai.opentensor.image.authors="operations@opentensor.ai" \
-        ai.opentensor.image.vendor="Opentensor Foundation" \
-        ai.opentensor.image.title="opentensor/subtensor" \
-        ai.opentensor.image.description="Opentensor Subtensor Blockchain" \
-        ai.opentensor.image.revision="${VCS_REF}" \
-        ai.opentensor.image.created="${BUILD_DATE}" \
-        ai.opentensor.image.documentation="https://docs.bittensor.com"
-
-# show backtraces
-ENV RUST_BACKTRACE 1
-
-# Necessary libraries for Rust execution
-RUN apt-get update && apt-get install -y curl build-essential protobuf-compiler clang git
-
-# Install cargo and Rust
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-RUN mkdir -p /subtensor
 WORKDIR /subtensor
 COPY . .
+RUN cargo build --locked --release
 
-# Update to nightly toolchain
-RUN ./scripts/init.sh
+# This is the 2nd stage: a very small image where we copy the binary."
+FROM docker.io/library/ubuntu:20.04
+LABEL description="Multistage Docker image for Subtensor Node" \
+  image.type="builder" \
+  image.authors="oliverlim818@gmail.com" \
+  image.vendor="Taostats" \
+  image.description="Multistage Docker image for Subtensor Node" \
+  image.source="https://github.com/opentensor/subtensor" \
+  image.documentation="https://github.com/opentensor/subtensor"
 
-# Cargo build
-RUN cargo build --release --features runtime-benchmarks --locked
-EXPOSE 30333 9933 9944
+# Copy the node binary.
+COPY --from=builder /subtensor/target/release/node-subtensor /usr/local/bin
 
-FROM $BASE_IMAGE
-COPY --from=builder /subtensor/snapshot.json /
-COPY --from=builder /subtensor/target/release/node-subtensor /
-COPY --from=builder /subtensor/raw_spec.json .
+RUN useradd -m -u 1000 -U -s /bin/sh -d /node-dev node-dev && \
+  mkdir -p /chain-data /node-dev/.local/share && \
+  chown -R node-dev:node-dev /chain-data && \
+  ln -s /chain-data /node-dev/.local/share/node-subtensor && \
+  # unclutter and minimize the attack surface
+  rm -rf /usr/bin /usr/sbin && \
+  # check if executable works in this container
+  /usr/local/bin/node-subtensor --version
 
+USER node-dev
+
+EXPOSE 30333 9933 9944 9615
+VOLUME ["/chain-data"]
+
+ENTRYPOINT ["/usr/local/bin/node-subtensor"]
